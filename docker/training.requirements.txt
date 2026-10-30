@@ -1,0 +1,8 @@
+# Runtime dependencies for the one-shot training image.
+numpy>=1.26,<3
+torch
+torchvision
+mlflow>=3,<4
+minio
+Pillow
+requests

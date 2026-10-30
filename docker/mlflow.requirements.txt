@@ -1,0 +1,2 @@
+# Tracking server runtime. Keep within the project's accepted MLflow major version.
+mlflow>=3,<4

@@ -1,0 +1,4 @@
+# Runtime dependencies for the Streamlit presentation image.
+# The UI intentionally has no PyTorch, MLflow, MinIO, or FastAPI dependency.
+streamlit
+requests

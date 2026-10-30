@@ -1,0 +1,30 @@
+# Fashion-MNIST training configuration
+#
+# These settings control the model training and validation workflow.
+# They can be changed without modifying Python source code.
+
+[training]
+
+# Number of complete passes through the training dataset.
+epochs = 10
+
+# Number of samples processed before one optimizer update.
+batch_size = 64
+
+# Learning rate used by the optimizer when updating model parameters.
+learning_rate = 0.001
+
+# Optimization algorithm.
+optimizer = "adam"
+
+# Loss function used for multi-class classification.
+loss = "cross_entropy"
+
+# Random seed used for reproducible operations.
+seed = 42
+
+
+[validation]
+
+# Fraction of the training dataset reserved for validation.
+validation_split = 0.1

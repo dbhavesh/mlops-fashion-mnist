@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "fashion-mnist-mlops"
+version = "0.1.0"
+description = "End-to-end MLOps application for training, tracking, storing, and serving a Fashion-MNIST classifier."
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    "numpy>=1.26,<3",
+    "torch",
+    "torchvision",
+    "mlflow>=3,<4",
+    "minio",
+    "fastapi",
+    "uvicorn",
+    "streamlit",
+    "Pillow",
+    "requests",
+    "python-multipart",
+]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

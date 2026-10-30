@@ -1,0 +1,32 @@
+# Version-control and local Python environments
+.git/
+.venv/
+
+# Python/test caches
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local secrets. Keep the non-secret example available to future images.
+.env
+.env.*
+!.env.example
+
+# Runtime/generated state must never enter an application image build context.
+data/
+artifacts/
+
+# Documentation/tests are not required by the API or UI runtime images.
+docs/
+tests/
+
+# Local notebooks and editor/OS noise.
+*.ipynb
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

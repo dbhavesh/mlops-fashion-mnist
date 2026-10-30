@@ -1,0 +1,11 @@
+# Runtime dependencies for the FastAPI serving image.
+# Keep this list aligned with [project].dependencies in pyproject.toml.
+numpy>=1.26,<3
+torch
+torchvision
+mlflow>=3,<4
+minio
+fastapi
+uvicorn
+Pillow
+python-multipart
