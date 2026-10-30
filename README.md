@@ -28,7 +28,7 @@ Use Python 3.12. The following commands are for Git Bash on Windows and
 must be run from this repository's root.
 
 ```bash
-python -m venv .venv
+py -3.12 -m venv .venv
 source .venv/Scripts/activate
 
 python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
@@ -36,11 +36,33 @@ python -m pip install -e ".[dev]"
 python -m pip check
 ```
 
-On Linux or macOS, activate with `source .venv/bin/activate`.
+On Linux or macOS, create the environment with `python3.12 -m venv .venv`
+and activate with `source .venv/bin/activate`.
 
 Installation uses the dependency ranges in `pyproject.toml`. If a validated
 environment snapshot is available, use it as a pip constraints file when
 reproducing that environment.
+
+## Training configuration
+
+Edit `configs/train.toml` to configure training without changing Python source.
+The supplied defaults are:
+
+| TOML setting | Default | Meaning |
+|---|---|---|
+| `training.epochs` | `10` | Complete passes over the training data |
+| `training.batch_size` | `64` | Images per batch |
+| `training.learning_rate` | `0.001` | Optimizer learning rate |
+| `training.optimizer` | `"adam"` | Supported values: `"adam"`, `"sgd"` |
+| `training.loss` | `"cross_entropy"` | Supported loss function |
+| `training.seed` | `42` | Seed for initialization and data ordering |
+| `validation.validation_split` | `0.1` | Fraction of training data reserved for validation |
+
+Use `--config path/to/settings.toml` for another configuration file. The
+`--epochs` argument overrides the configured epoch count. Sample limits are
+optional CLI arguments for short checks; omit both to use the complete split.
+Tracked runs record the effective settings, including overrides and sample
+limits, in MLflow and retain training provenance with the model artifact.
 
 ## Local training
 
@@ -72,6 +94,17 @@ python -m fashion_mnist_mlops.train --help
 A bounded run checks the workflow. Assess model quality using an appropriate
 training budget and a separate evaluation.
 
+For full-dataset local training with ten epochs:
+
+```bash
+python -m fashion_mnist_mlops.train --download-data --epochs 10
+```
+
+With the supplied split, this uses 54,000 training and 6,000 validation images.
+The separate 10,000-image test partition is not the validation partition.
+Local training without `--track-mlflow --upload-minio` does not publish a model
+for the containerized API. Use the tracked container workflow below to publish.
+
 ## Docker configuration
 
 Use Docker Desktop with Linux containers on Windows.
@@ -83,6 +116,18 @@ cp .env.example .env
 Set `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` in `.env` to your own local
 credentials. Keep `.env` out of version control. Leave `MODEL_OBJECT_KEY`
 empty until a model has been published.
+
+Exported shell variables take precedence over `.env` for Compose interpolation.
+If you previously selected a model in the shell, clear that override before
+using the value saved in `.env`:
+
+```bash
+unset MODEL_OBJECT_KEY
+```
+
+Clear any other stale exported overrides when switching deployments. Do not
+print or share the real credentials. Log in to the MinIO console with the
+`MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` values from your local `.env`.
 
 Compose reads `.env` automatically. Direct Python commands require settings
 in the process environment; they do not automatically load this file.
@@ -140,7 +185,8 @@ docker compose run --rm --no-deps training \
   python scripts/provision_minio_bucket.py
 ```
 
-The required bucket name is exactly `fashion-minst-bucket`.
+The required bucket name is exactly `fashion-minst-bucket`. The spelling
+`minst` is intentional and follows the assignment requirement.
 
 ## Tracked container training
 
@@ -168,6 +214,29 @@ published MinIO model and MLflow records persist. Mount `data/` and
 `artifacts/` explicitly when retaining a local cache and model files is
 required, such as for local-artifact run comparison.
 
+### Retain the dataset cache and local artifacts
+
+After initializing MLflow and the bucket, this Git Bash command runs the
+configured training job while retaining downloaded data and local models:
+
+```bash
+mkdir -p data artifacts
+
+MSYS_NO_PATHCONV=1 docker compose run --rm -T \
+  --volume "$(pwd -W)/data:/app/data" \
+  --volume "$(pwd -W)/artifacts:/app/artifacts" \
+  training
+```
+
+`pwd -W` supplies an absolute Windows path; `MSYS_NO_PATHCONV=1` prevents
+Git Bash from rewriting container paths. On Linux/macOS, omit that environment
+assignment and use `$(pwd)` in place of `$(pwd -W)`.
+
+Configuration and source files are copied into the training image at build
+time. After editing `configs/train.toml`, rebuild with
+`docker compose build training` before running that image again. Alternatively,
+mount an external configuration and pass its container path with `--config`.
+
 ## Select and serve a model
 
 Set the exact key in `.env`:
@@ -179,17 +248,27 @@ MODEL_OBJECT_KEY=model/<mlflow-run-id>/model.pt
 Then start serving:
 
 ```bash
-docker compose up -d --wait api ui
+docker compose up -d --wait --wait-timeout 240 api ui
 ```
 
 When selecting a different model, recreate the API so it receives the
 updated environment:
 
 ```bash
-docker compose up -d --force-recreate --wait api
+unset MODEL_OBJECT_KEY
+docker compose up -d --force-recreate --wait --wait-timeout 240 api
 ```
 
-The API does not choose a model automatically.
+Check readiness after startup or a model change:
+
+```bash
+curl --noproxy '*' -fsS http://localhost:18000/health
+curl --noproxy '*' -fsS http://localhost:18000/ready
+```
+
+Expect `status: ready` and the selected MLflow run ID from `/ready`. Adjust
+these URLs if you changed the host ports. The API does not choose a model
+automatically.
 
 - `GET /health` checks that the API process responds.
 - `GET /ready` retrieves and verifies the selected model on demand.
@@ -251,6 +330,93 @@ accuracy below are illustrative:
 }
 ```
 
+### Capture and verify an actual notification
+
+First complete the Docker build, MLflow initialization and bucket provisioning
+above. Run the following from the project root in Git Bash. It starts an HTTP
+receiver in a background thread inside the training container, then invokes
+the training CLI as a separate process with a reachable receiver URL. No
+additional host port or Windows firewall rule is required.
+
+This example uses one epoch and limited samples to check delivery. It permits
+the initial dataset download, retains the cache, and writes each captured
+payload to a unique file under `artifacts/webhooks/`.
+
+```bash
+mkdir -p data artifacts
+
+MSYS_NO_PATHCONV=1 docker compose run --rm -T \
+  --volume "$(pwd -W)/data:/app/data" \
+  --volume "$(pwd -W)/artifacts:/app/artifacts" \
+  --volume "$(pwd -W)/scripts:/app/scripts:ro" \
+  --entrypoint python \
+  training - <<'PYTHON'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+from uuid import uuid4
+
+from fashion_mnist_mlops.webhook_receiver import create_webhook_receiver
+
+receiver = create_webhook_receiver(port=0)
+worker = threading.Thread(target=receiver.serve_forever, daemon=True)
+worker.start()
+environment = os.environ.copy()
+environment["WEBHOOK_URL"] = (
+    f"http://127.0.0.1:{receiver.server_address[1]}/webhook"
+)
+capture = Path("/app/artifacts/webhooks") / f"{uuid4().hex}.json"
+
+try:
+    subprocess.run(
+        [
+            sys.executable, "-m", "fashion_mnist_mlops.train",
+            "--project-root", "/app",
+            "--epochs", "1",
+            "--max-train-samples", "1024",
+            "--max-validation-samples", "256",
+            "--download-data", "--track-mlflow", "--upload-minio",
+        ],
+        env=environment,
+        check=True,
+    )
+    if len(receiver.captured_payloads) != 1:
+        raise RuntimeError("Expected exactly one accepted webhook.")
+    capture.parent.mkdir(parents=True, exist_ok=True)
+    with capture.open("x", encoding="utf-8") as output:
+        json.dump(receiver.captured_payloads[0], output, indent=2)
+        output.write("\n")
+    subprocess.run(
+        [sys.executable, "scripts/verify_webhook.py", "--payload", str(capture)],
+        check=True,
+    )
+    print(f"Captured payload: {capture}")
+    print(f"Host file: artifacts/webhooks/{capture.name}")
+finally:
+    receiver.shutdown()
+    receiver.server_close()
+    worker.join(timeout=5)
+PYTHON
+```
+
+Expect `Webhook delivered: HTTP 204` and a verification result confirming a
+FINISHED MLflow run and matching MinIO model bytes. This tests real local HTTP
+delivery, not connectivity to an external webhook provider. It creates a new
+model version but does not change the API's selected model.
+
+Training, required tracking and upload failures must not emit a success
+notification. The corresponding automated checks are:
+
+```bash
+python -m pytest -q -rs \
+  tests/unit/test_webhook_failure_boundaries.py \
+  tests/unit/test_webhook_runner.py \
+  tests/unit/test_minio_upload_runner.py
+```
+
 ## Verification utilities
 
 Run these from the repository root with the appropriate environment
@@ -272,6 +438,28 @@ Run comparison checks parameters, metric histories, and provenance against
 retained project-local model files. Those local files must be available
 under the project root supplied to the utility.
 
+### Run a verification helper inside Docker
+
+The training image includes `provision_minio_bucket.py`; the other helper
+scripts require a read-only scripts mount. After publishing a model, verify
+its remote reference and CPU restoration using this Git Bash example:
+
+```bash
+read -r -p "Paste the model object key (model/<run-id>/model.pt): " model_key
+
+MSYS_NO_PATHCONV=1 docker compose run --rm -T \
+  --volume "$(pwd -W)/scripts:/app/scripts:ro" \
+  --entrypoint python \
+  training \
+  scripts/verify_model_inference.py \
+  --destination /tmp/verified-model.pt \
+  --object-key "$model_key"
+```
+
+Paste the actual object key when prompted, then press Enter. Leave `model_key`
+as the variable name in the command. The helper uses a synthetic image to
+check restoration and inference; its prediction is not an accuracy measure.
+
 ## Tests
 
 Use the installed project environment for consolidated validation:
@@ -285,7 +473,11 @@ Integration tests must complete without skips. Reports are written beneath
 `artifacts/validation/`. These checks do not start Docker services or replace
 live deployment verification.
 
-After committing the reviewed project, also check repository cleanliness:
+A GitHub ZIP download has no `.git` directory. Use the command above for an
+extracted ZIP. Do not initialize Git merely to run the tests.
+
+For a Git checkout, after committing the reviewed project, also check
+repository cleanliness:
 
 ```bash
 python scripts/validate.py --require-clean
@@ -302,6 +494,21 @@ For individual checks:
 python -m pip check
 python -m pytest -q -rs tests/unit
 python -m pytest -q -rs tests/integration
+```
+
+For a fresh installation, explicitly download both dataset partitions before
+running the integration suite or consolidated validation:
+
+```bash
+python - <<'PYTHON'
+from torchvision.datasets import FashionMNIST
+
+for training_partition in (True, False):
+    dataset = FashionMNIST(
+        root="data", train=training_partition, download=True
+    )
+    print("Training" if training_partition else "Test", len(dataset))
+PYTHON
 ```
 
 The training integration test uses a small subset of the real cached
